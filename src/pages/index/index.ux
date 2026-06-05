@@ -1,0 +1,722 @@
+<template>
+  <div class="nav-page {{ highContrast ? 'minimal' : '' }}" @touchstart="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">
+    <div class="status-row">
+      <text class="status-text">{{ statusText }}</text>
+      <text class="clock-text">{{ currentTime }}</text>
+    </div>
+
+    <div class="turn-box {{ highContrast ? 'turn-box-large' : '' }}">
+      <stack class="icon-stack {{ highContrast ? 'icon-stack-large' : '' }}">
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'LEFT' }}" src="/common/arrows/turn_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'RIGHT' }}" src="/common/arrows/turn_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'SLIGHT_LEFT' }}" src="/common/arrows/turn_slight_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'SLIGHT_RIGHT' }}" src="/common/arrows/turn_slight_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'SHARP_LEFT' }}" src="/common/arrows/turn_sharp_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'SHARP_RIGHT' }}" src="/common/arrows/turn_sharp_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'STRAIGHT' || direction === 'UNKNOWN' }}" src="/common/arrows/straight.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'UTURN' || direction === 'UTURN_LEFT' }}" src="/common/arrows/u_turn_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'UTURN_RIGHT' }}" src="/common/arrows/u_turn_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'MERGE' }}" src="/common/arrows/merge.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'RAMP_LEFT' }}" src="/common/arrows/turn_slight_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'RAMP_RIGHT' }}" src="/common/arrows/turn_slight_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'FORK_LEFT' }}" src="/common/arrows/fork_left.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'FORK_RIGHT' }}" src="/common/arrows/fork_right.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'ROUNDABOUT_LEFT' || direction === 'ROUNDABOUT_RIGHT' || direction === 'ROUNDABOUT' || direction === 'ROUNDABOUT_EXIT_1' || direction === 'ROUNDABOUT_EXIT_2' || direction === 'ROUNDABOUT_EXIT_3' }}" src="/common/arrows/roundabout_v2.png" />
+        <img class="turn-img {{ highContrast ? 'turn-img-large' : '' }}" show="{{ direction === 'ARRIVE' }}" src="/common/arrows/straight.png" />
+      </stack>
+    </div>
+
+    <text class="distance {{ highContrast ? 'distance-large' : '' }}">{{ displayDistance }}</text>
+    <text class="street {{ displayDistance ? '' : 'street-no-distance' }}" show="{{ !highContrast }}">{{ street }}</text>
+    <text class="hint {{ displayDistance ? '' : 'hint-no-distance' }}" show="{{ !highContrast }}">{{ sourceText }}</text>
+    <text class="eta {{ displayDistance ? '' : 'eta-no-distance' }}" show="{{ !highContrast }}">{{ etaText }}</text>
+
+  </div>
+</template>
+
+<script>
+import router from "@system.router"
+import interconnect from "@system.interconnect"
+import vibrator from "@system.vibrator"
+import app from "@system.app"
+import {
+  parseNavigationPayload
+} from "../../common/utils"
+import {
+  loadSettings,
+  saveSettings,
+  applyKeepScreenOn
+} from "../../common/settings"
+
+let connect = null
+let autoExitTimer = null
+let clockTimer = null
+
+export default {
+  private: {
+    connected: false,
+    statusText: "WAIT PHONE",
+    direction: "UNKNOWN",
+    distance: "--",
+    displayDistance: "--",
+    street: "Open companion app",
+    sourceText: "Interconnect",
+    etaText: "ETA --:--",
+    currentTime: "--:--",
+    highContrast: false,
+    keepScreenOn: false,
+    screenMode: "system",
+    brightnessPercent: 70,
+    vibrationIntensity: "medium",
+    vibrationPattern: "smart",
+    refreshMode: "realtime",
+    autoExitMinutes: 10,
+    touchStartX: 0,
+    touchStartY: 0,
+    touchEndX: 0,
+    touchEndY: 0,
+    isTouching: false,
+    lastTapAt: 0,
+    lastMessageAt: 0,
+    lastHapticKey: ""
+  },
+
+  onInit() {
+    this.loadUserSettings()
+    this.startClock()
+    this.bindInterconnect()
+  },
+
+  onShow() {
+    this.loadUserSettings()
+  },
+
+  onDestroy() {
+    this.cancelAutoExitTimer()
+    this.stopClock()
+    applyKeepScreenOn(false)
+  },
+
+  routeDetail() {
+    router.push({
+      uri: "/pages/detail"
+    })
+  },
+
+  exitApp() {
+    this.cancelAutoExitTimer()
+    this.stopClock()
+    applyKeepScreenOn(false)
+    if (app && app.terminate) {
+      app.terminate()
+      return
+    }
+    router.back()
+  },
+
+  startClock() {
+    this.updateClock()
+    clockTimer = setInterval(() => {
+      this.updateClock()
+    }, 30000)
+  },
+
+  stopClock() {
+    if (clockTimer) {
+      clearInterval(clockTimer)
+      clockTimer = null
+    }
+  },
+
+  updateClock() {
+    const now = new Date()
+    const h = now.getHours() < 10 ? "0" + now.getHours() : "" + now.getHours()
+    const m = now.getMinutes() < 10 ? "0" + now.getMinutes() : "" + now.getMinutes()
+    this.currentTime = h + ":" + m
+  },
+
+  loadUserSettings() {
+    loadSettings((settings) => {
+      this.highContrast = settings.highContrast
+      this.keepScreenOn = settings.keepScreenOn
+      this.screenMode = settings.screenMode
+      this.brightnessPercent = settings.brightnessPercent
+      this.vibrationIntensity = settings.vibrationIntensity
+      this.vibrationPattern = settings.vibrationPattern
+      this.refreshMode = settings.refreshMode
+      this.autoExitMinutes = settings.autoExitMinutes
+      this.displayDistance = this.refreshMode === "changes" ? "" : this.distance
+      applyKeepScreenOn(this.screenMode, this.brightnessPercent)
+      this.resetAutoExitTimer()
+    })
+  },
+
+  bindInterconnect() {
+    /*
+     * Vela OS interconnect slave endpoint.
+     * interconnect.instance() binds this quick app to the Android companion
+     * channel exposed by Xiaomi Wearable SDK MessageApi. onmessage receives
+     * bytes/string/object sent from Android; send() replies handshake packets.
+     */
+    connect = interconnect.instance()
+
+    connect.onopen = () => {
+      this.connected = true
+      this.statusText = "PHONE OK"
+      this.sourceText = "Interconnect"
+      this.sendHandshake(0)
+    }
+
+    connect.onclose = () => {
+      this.connected = false
+      this.statusText = this.lastMessageAt > 0 ? "WAIT APP" : "WAIT PHONE"
+      console.log("interconnect close")
+    }
+
+    connect.onerror = (data) => {
+      this.connected = false
+      this.statusText = "LINK ERROR"
+      console.log("interconnect error " + JSON.stringify(data))
+    }
+
+    connect.onmessage = (data) => {
+      const raw = data && data.data !== undefined ? data.data : data
+      this.lastMessageAt = Date.now()
+      this.resetAutoExitTimer()
+      console.log("interconnect message " + JSON.stringify(raw))
+      if (this.handleHandshake(raw)) return
+      this.applyNavigation(raw)
+    }
+
+    connect.getReadyState({
+      success: (data) => {
+        if (data.status === 1) {
+          this.connected = true
+          this.statusText = "PHONE OK"
+        } else {
+          this.connected = false
+          this.statusText = "WAIT APP"
+        }
+      },
+      fail: (data, code) => {
+        this.connected = false
+        this.statusText = "WAIT PHONE"
+        console.log("getReadyState fail " + code)
+      }
+    })
+  },
+
+  sendHandshake(count) {
+    if (!connect) return
+    try {
+      // connect.send forwards a small JSON object to Android MessageApi listener.
+      connect.send({
+        data: {
+          tag: "__hs__",
+          count: count,
+          version: 3
+        },
+        fail: (data, code) => {
+          console.log("handshake send fail " + code)
+        }
+      })
+    } catch (e) {
+      console.log("handshake exception " + e.message)
+    }
+  },
+
+  handleHandshake(raw) {
+    let obj = null
+    if (typeof raw === "object") {
+      obj = raw
+    } else {
+      const text = String(raw || "")
+      if (text.indexOf("__hs__") < 0) return false
+      try {
+        obj = JSON.parse(text)
+      } catch (e) {
+        return false
+      }
+    }
+
+    if (!obj || obj.tag !== "__hs__") return false
+
+    this.connected = true
+    this.statusText = "PHONE OK"
+    this.sourceText = "Handshake"
+    const count = Number(obj.count || 0)
+    if (count < 3) {
+      this.sendHandshake(count + 1)
+    }
+    return true
+  },
+
+  onTouchStart(e) {
+    if (!e || !e.touches || !e.touches[0]) return
+    this.isTouching = true
+    this.touchStartX = e.touches[0].clientX
+    this.touchStartY = e.touches[0].clientY
+    this.touchEndX = this.touchStartX
+    this.touchEndY = this.touchStartY
+  },
+
+  onTouchMove(e) {
+    if (!this.isTouching || !e || !e.touches || !e.touches[0]) return
+    this.touchEndX = e.touches[0].clientX
+    this.touchEndY = e.touches[0].clientY
+  },
+
+  onTouchEnd() {
+    if (!this.isTouching) return
+    this.isTouching = false
+    const deltaX = this.touchEndX - this.touchStartX
+    const deltaY = this.touchEndY - this.touchStartY
+    if (Math.abs(deltaX) < 18 && Math.abs(deltaY) < 18) {
+      this.handleTap()
+      return
+    }
+    if (deltaX > 50 && Math.abs(deltaX) > Math.abs(deltaY)) {
+      this.exitApp()
+    }
+  },
+
+  handleTap() {
+    const now = Date.now()
+    if (now - this.lastTapAt <= 450) {
+      if (this.highContrast) {
+        this.disableMinimalMode()
+      } else {
+        this.routeDetail()
+      }
+      this.lastTapAt = 0
+      return
+    }
+    this.lastTapAt = now
+  },
+
+  disableMinimalMode() {
+    this.highContrast = false
+    saveSettings({
+      highContrast: false,
+      keepScreenOn: this.keepScreenOn,
+      screenMode: this.screenMode,
+      brightnessPercent: this.brightnessPercent,
+      vibrationIntensity: this.vibrationIntensity,
+      vibrationPattern: this.vibrationPattern,
+      refreshMode: this.refreshMode,
+      autoExitMinutes: this.autoExitMinutes
+    })
+    this.runPulse("short", 1, 0)
+  },
+
+  applyNavigation(raw) {
+    const nav = parseNavigationPayload(raw)
+    if (!nav) {
+      this.connected = true
+      this.statusText = "RX RAW"
+      this.street = String(raw).substring(0, 28)
+      return
+    }
+
+    this.connected = true
+    this.statusText = "PHONE OK"
+    this.direction = nav.direction
+    this.distance = nav.distance || "--"
+    this.displayDistance = this.refreshMode === "changes" || this.distance === "--" ? "" : this.distance
+    this.street = nav.street || "Continue"
+    this.sourceText = nav.source || "Navigating"
+    this.etaText = "ETA " + (nav.eta || "--:--")
+
+    this.maybeVibrate(nav)
+  },
+
+  maybeVibrate(nav) {
+    const meters = this.distanceMeters(nav.distance)
+    const hapticBucket = this.smartHapticBucket(meters)
+    const hapticKey = this.vibrationPattern === "smart" && hapticBucket
+      ? String(nav.direction || "") + "|" + String(nav.street || "") + "|" + hapticBucket
+      : String(nav.direction || "") + "|" + String(nav.street || "")
+    const changedRoute = hapticKey !== this.lastHapticKey
+    if (!changedRoute) return
+    this.lastHapticKey = hapticKey
+
+    const pattern = this.resolveVibrationPattern(nav)
+    this.runVibrationPattern(pattern, meters)
+  },
+
+  resolveVibrationPattern(nav) {
+    if (this.vibrationPattern !== "smart") return this.vibrationPattern
+
+    const meters = this.distanceMeters(nav.distance)
+    if (meters >= 0) return "smart"
+    return "none"
+  },
+
+  smartHapticBucket(meters) {
+    if (meters <= 0) return ""
+    if (meters <= 100) return "u100-" + Math.floor(meters / 5) * 5
+    if (meters <= 200) return "u200-" + Math.floor(meters / 10) * 10
+    return "o200-" + Math.floor(meters / 100) * 100
+  },
+
+  distanceMeters(value) {
+    const text = String(value || "").toLowerCase()
+    const match = text.match(/(\d+[.,]?\d*)\s*(km|m)/)
+    if (!match) return -1
+    const number = Number(match[1].replace(",", "."))
+    if (isNaN(number)) return -1
+    return match[2] === "km" ? Math.round(number * 1000) : Math.round(number)
+  },
+
+  runVibrationPattern(pattern, meters) {
+    const profile = this.resolveHapticProfile(pattern, meters)
+    this.runPulse(profile.mode, profile.repeat, profile.delay)
+  },
+
+  resolveHapticProfile(pattern, meters) {
+    if (pattern === "none") {
+      return {
+        mode: "short",
+        repeat: 0,
+        delay: 0
+      }
+    }
+    if (pattern === "smart" && meters > 0) {
+      return this.resolveSmartApproachProfile(meters)
+    }
+
+    const base = {
+      strong: {
+        mode: "long",
+        repeat: 3,
+        delay: 260
+      },
+      medium: {
+        mode: "long",
+        repeat: 1,
+        delay: 0
+      },
+      light: {
+        mode: "short",
+        repeat: 1,
+        delay: 0
+      }
+    }[this.vibrationIntensity] || {
+      mode: "long",
+      repeat: 1,
+      delay: 0
+    }
+
+    if (pattern === "double") {
+      base.repeat = Math.max(base.repeat, this.vibrationIntensity === "strong" ? 3 : 2)
+      base.delay = 260
+    }
+    if (pattern === "long") {
+      base.mode = "long"
+      base.repeat = Math.max(base.repeat, this.vibrationIntensity === "strong" ? 3 : 1)
+      base.delay = base.repeat > 1 ? 260 : 0
+    }
+    return base
+  },
+
+  resolveSmartApproachProfile(meters) {
+    if (meters >= 200) {
+      return {
+        mode: "short",
+        repeat: 1,
+        delay: 0
+      }
+    }
+    if (meters > 100) {
+      return {
+        mode: "short",
+        repeat: this.vibrationIntensity === "strong" ? 2 : 1,
+        delay: 260
+      }
+    }
+    if (meters >= 90) {
+      return {
+        mode: "short",
+        repeat: this.vibrationIntensity === "light" ? 1 : 2,
+        delay: 280
+      }
+    }
+    if (meters >= 80) {
+      return {
+        mode: "short",
+        repeat: 2,
+        delay: 230
+      }
+    }
+    if (meters >= 70) {
+      return {
+        mode: "short",
+        repeat: this.vibrationIntensity === "strong" ? 3 : 2,
+        delay: 180
+      }
+    }
+    if (meters >= 60) {
+      return {
+        mode: this.vibrationIntensity === "strong" ? "long" : "short",
+        repeat: this.vibrationIntensity === "light" ? 3 : 4,
+        delay: 110
+      }
+    }
+    if (meters <= 5) {
+      return {
+        mode: "short",
+        repeat: 0,
+        delay: 0
+      }
+    }
+    if (meters <= 25) {
+      return {
+        mode: "long",
+        repeat: this.vibrationIntensity === "light" ? 2 : 4,
+        delay: 90
+      }
+    }
+    if (meters <= 50) {
+      return {
+        mode: "short",
+        repeat: this.vibrationIntensity === "strong" ? 4 : 3,
+        delay: 130
+      }
+    }
+    if (meters <= 75) {
+      return {
+        mode: "short",
+        repeat: this.vibrationIntensity === "light" ? 2 : 3,
+        delay: 190
+      }
+    }
+    return {
+      mode: "short",
+      repeat: this.vibrationIntensity === "light" ? 2 : 3,
+      delay: 230
+    }
+  },
+
+  runPulse(mode, repeat, delay) {
+    for (let i = 0; i < repeat; i++) {
+      setTimeout(() => {
+        vibrator.vibrate({
+          mode,
+          fail: (data, code) => {
+            console.log("vibrate fail " + code)
+          }
+        })
+      }, i * delay)
+    }
+  },
+
+  resetAutoExitTimer() {
+    this.cancelAutoExitTimer()
+    if (!this.autoExitMinutes) return
+    autoExitTimer = setTimeout(() => {
+      this.exitApp()
+    }, this.autoExitMinutes * 60 * 1000)
+  },
+
+  cancelAutoExitTimer() {
+    if (autoExitTimer) {
+      clearTimeout(autoExitTimer)
+      autoExitTimer = null
+    }
+  }
+}
+</script>
+
+<style src="../../common/style.css"></style>
+
+<style>
+.nav-page {
+  width: 100%;
+  height: 100%;
+  background-color: #05070a;
+  color: #ffffff;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-left: 0px;
+  padding-right: 0px;
+  padding-top: 0px;
+  padding-bottom: 0px;
+}
+
+.minimal {
+  background-color: #000000;
+}
+
+.status-row {
+  position: absolute;
+  top: 7px;
+  left: 18px;
+  width: 66px;
+  height: 24px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.status-text {
+  width: 66px;
+  height: 12px;
+  font-size: 9px;
+  color: #d7dde5;
+  text-align: center;
+}
+
+.clock-text {
+  width: 66px;
+  height: 12px;
+  font-size: 10px;
+  color: #ffffff;
+  text-align: center;
+}
+
+.turn-box {
+  position: absolute;
+  left: 0px;
+  top: 35px;
+  width: 106px;
+  height: 92px;
+  border-radius: 8px;
+  background-color: #000000;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.asset-preload {
+  position: absolute;
+  left: -200px;
+  top: -200px;
+  width: 1px;
+  height: 1px;
+}
+
+.preload-img {
+  width: 1px;
+  height: 1px;
+}
+
+.turn-box-large {
+  position: absolute;
+  left: 0px;
+  top: 36px;
+  width: 106px;
+  height: 106px;
+  background-color: #000000;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-stack {
+  width: 85px;
+  height: 85px;
+  align-items: center;
+  justify-content: center;
+}
+
+.icon-stack-large {
+  width: 100px;
+  height: 100px;
+  align-items: center;
+  justify-content: center;
+}
+
+.turn-img {
+  width: 85px;
+  height: 85px;
+  object-fit: contain;
+}
+
+.turn-img-large {
+  width: 100px !important;
+  height: 100px !important;
+  object-fit: contain;
+}
+
+.distance {
+  position: absolute;
+  left: 5px;
+  top: 128px;
+  width: 96px;
+  height: 25px;
+  font-size: 22px;
+  font-weight: bold;
+  text-align: center;
+  color: #ffffff;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+.distance-large {
+  position: absolute;
+  left: 0px;
+  top: 150px;
+  width: 106px;
+  height: 32px;
+  font-size: 28px;
+  margin-top: 0px;
+  margin-bottom: 0px;
+}
+
+.street {
+  position: absolute;
+  left: 4px;
+  top: 154px;
+  width: 98px;
+  height: 33px;
+  font-size: 12px;
+  line-height: 14px;
+  text-align: center;
+  color: #d7dde5;
+}
+
+.street-no-distance {
+  top: 132px;
+  height: 46px;
+  font-size: 13px;
+  line-height: 15px;
+}
+
+.hint {
+  position: absolute;
+  left: 5px;
+  top: 188px;
+  width: 96px;
+  height: 11px;
+  font-size: 8px;
+  text-align: center;
+  color: #7f8a99;
+  margin-top: 0px;
+}
+
+.hint-no-distance {
+  top: 181px;
+  height: 12px;
+  font-size: 9px;
+}
+
+.eta {
+  position: absolute;
+  left: 5px;
+  top: 199px;
+  width: 96px;
+  height: 11px;
+  font-size: 8px;
+  text-align: center;
+  color: #aeb7c4;
+  margin-top: 0px;
+}
+
+.eta-no-distance {
+  top: 195px;
+  height: 13px;
+  font-size: 9px;
+}
+
+</style>
