@@ -1,12 +1,10 @@
-# VietNav Vela Quick App
+# VietNav  Quick App
 
-Slave app for Xiaomi Smart Band 10 / Xiaomi Vela OS.
+Navigation quickapp for Xiaomi Smart Band 10.
 
-Transport:
+Feature:
 
-- Vela receives navigation payloads with `@system.interconnect`.
-- Android sends bytes with Xiaomi Wearable SDK `MessageApi.sendMessage`.
-- Payload format: `DIRECTION|DISTANCE|STREET|ETA`.
+Well... nagivation...
 
 Build:
 
@@ -15,4 +13,4 @@ npm install
 npm run build
 ```
 
-Install the generated `.rpk` with AIOT IDE, then open VietNav Companion on Android.
+Install the generated `.rpk` with the installer app of your choice (astrobox, notify for xiaomi), connect to Mi Fitness, then open VietNav Companion on Android.
